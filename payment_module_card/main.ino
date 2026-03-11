@@ -1,92 +1,176 @@
+#include <Wire.h>
 #include <SPI.h>
 #include <MFRC522.h>
+#include <SHA256.h>
 
-#define RST_PIN 9
+#define I2C_ADDRESS 0x08
+#define HASH_SIZE 32
+
 #define SS_PIN 10
-#define PIN_YES 3  
-#define PIN_NO 2   
+#define RST_PIN 9
 
-MFRC522 rfid(SS_PIN, RST_PIN);
-MFRC522::MIFARE_Key key;
-byte ndefKey[6] = {0xD3, 0xF7, 0xD3, 0xF7, 0xD3, 0xF7};
+#define LED_OK 4
+#define LED_FAIL 5
 
-int price = 139; // наш ценник
+#define CMD_DENY 0xA0
+#define CMD_APPROVE_AND_CHARGE 0xA1
+
+MFRC522 mfrc522(SS_PIN, RST_PIN);
+SHA256 sha256;
+
+byte hashBuffer[HASH_SIZE];
+bool hashReady = false;
+
+volatile bool commandPending = false;
+volatile byte receivedCommand = 0;
+
+unsigned long lastScanTime = 0;
+const unsigned long scanCooldown = 1500;
+
+const char fixedString[] = "aswer";
+
+void clearHashBuffer() {
+  for (byte i = 0; i < HASH_SIZE; i++) {
+    hashBuffer[i] = 0;
+  }
+  hashReady = false;
+}
+
+void computeHashFromFixedString() {
+  sha256.reset();
+  sha256.update((const uint8_t*)fixedString, strlen(fixedString));
+  sha256.finalize(hashBuffer, HASH_SIZE);
+  hashReady = true;
+}
+
+void printHash(byte *hash) {
+  Serial.print("hash: ");
+  for (byte i = 0; i < HASH_SIZE; i++) {
+    if (hash[i] < 0x10) Serial.print("0");
+    Serial.print(hash[i], HEX);
+  }
+  Serial.println();
+}
+
+void indicateSuccess() {
+  digitalWrite(LED_OK, HIGH);
+  delay(500);
+  digitalWrite(LED_OK, LOW);
+}
+
+void indicateFail() {
+  for (byte i = 0; i < 3; i++) {
+    digitalWrite(LED_FAIL, HIGH);
+    delay(180);
+    digitalWrite(LED_FAIL, LOW);
+    delay(180);
+  }
+}
+
+bool chargeBalance() {
+  delay(250);
+  return true;
+}
+
+void onI2CRequest() {
+  if (hashReady) {
+    Wire.write(hashBuffer, HASH_SIZE);
+  } else {
+    byte empty[HASH_SIZE];
+    for (byte i = 0; i < HASH_SIZE; i++) empty[i] = 0;
+    Wire.write(empty, HASH_SIZE);
+  }
+}
+
+void onI2CReceive(int count) {
+  if (count < 1) return;
+  receivedCommand = Wire.read();
+  commandPending = true;
+
+  while (Wire.available()) {
+    Wire.read();
+  }
+}
+
+void handleCommand(byte cmd) {
+  if (cmd == CMD_APPROVE_AND_CHARGE) {
+    Serial.println("approve command received");
+    bool charged = chargeBalance();
+
+    if (charged) {
+      Serial.println("charge success");
+      indicateSuccess();
+    } else {
+      Serial.println("charge failed");
+      indicateFail();
+    }
+
+    clearHashBuffer();
+  } else if (cmd == CMD_DENY) {
+    Serial.println("deny command received");
+    indicateFail();
+    clearHashBuffer();
+  } else {
+    Serial.print("unknown command: ");
+    Serial.println(cmd, HEX);
+    indicateFail();
+    clearHashBuffer();
+  }
+}
 
 void setup() {
-    Serial.begin(9600);
-    SPI.begin();
-    rfid.PCD_Init();
-    for (byte i = 0; i < 6; i++) key.keyByte[i] = ndefKey[i];
-    pinMode(PIN_YES, OUTPUT);
-    pinMode(PIN_NO, OUTPUT);
-    Serial.println("готов к работе с телефонными метками...");
+  Serial.begin(9600);
+
+  pinMode(LED_OK, OUTPUT);
+  pinMode(LED_FAIL, OUTPUT);
+  digitalWrite(LED_OK, LOW);
+  digitalWrite(LED_FAIL, LOW);
+
+  SPI.begin();
+  mfrc522.PCD_Init();
+
+  Wire.begin(I2C_ADDRESS);
+  Wire.onRequest(onI2CRequest);
+  Wire.onReceive(onI2CReceive);
+
+  clearHashBuffer();
+
+  Serial.println("reader ready");
 }
 
 void loop() {
-    if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) return;
+  if (commandPending) {
+    noInterrupts();
+    byte cmd = receivedCommand;
+    commandPending = false;
+    interrupts();
 
-    byte blockAddr = 4; 
-    byte buffer[18];
-    byte size = sizeof(buffer);
+    handleCommand(cmd);
+  }
 
-    // авторизация (используем ключ для ndef)
-    if (rfid.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, blockAddr, &key, &(rfid.uid)) != MFRC522::STATUS_OK) {
-        Serial.println("ошибка ключа {warning}");
-        return;
-    }
+  if (millis() - lastScanTime < scanCooldown) {
+    delay(30);
+    return;
+  }
 
-    // читаем блок целиком (со всеми заголовками смартфона)
-    if (rfid.MIFARE_Read(blockAddr, buffer, &size) != MFRC522::STATUS_OK) return;
+  if (!mfrc522.PICC_IsNewCardPresent()) {
+    delay(30);
+    return;
+  }
 
-    String rawDigits = "";
-    int firstDigitIndex = -1;
+  if (!mfrc522.PICC_ReadCardSerial()) {
+    delay(30);
+    return;
+  }
 
-    // ищем, где в блоке начинаются цифры и запоминаем позицию
-    for (int i = 0; i < 16; i++) {
-        if (isDigit(buffer[i])) {
-            if (firstDigitIndex == -1) firstDigitIndex = i;
-            rawDigits += (char)buffer[i];
-        }
-    }
+  Serial.println("card detected");
+  computeHashFromFixedString();
+  printHash(hashBuffer);
 
-    if (firstDigitIndex != -1 && rawDigits.length() > 0) {
-        int currentBalance = rawDigits.toInt();
-        Serial.print("баланс с телефона: "); Serial.println(currentBalance);
+  lastScanTime = millis();
 
-        if (currentBalance >= price) {
-            int newBalance = currentBalance - price;
-            String newStr = String(newBalance);
+  mfrc522.PICC_HaltA();
+  mfrc522.PCD_StopCrypto1();
 
-            // критический момент: вписываем новое число ПОВЕРХ старого в ТОТ ЖЕ буфер
-            // мы не трогаем buffer[0], buffer[1] и т.д., где лежат метки NDEF
-            for (int i = 0; i < newStr.length(); i++) {
-                buffer[firstDigitIndex + i] = newStr[i];
-            }
-            
-            // если новое число короче старого (н-р было 100 стало 50), забиваем лишнюю цифру пробелом
-            if (newStr.length() < rawDigits.length()) {
-                for (int i = newStr.length(); i < rawDigits.length(); i++) {
-                    buffer[firstDigitIndex + i] = ' '; 
-                }
-            }
-
-            // пишем измененный буфер обратно
-            if (rfid.MIFARE_Write(blockAddr, buffer, 16) == MFRC522::STATUS_OK) {
-                Serial.print("успех! новый баланс: "); Serial.println(newBalance);
-                digitalWrite(PIN_YES, HIGH);
-                delay(1000);
-                digitalWrite(PIN_YES, LOW);
-            }
-        } else {
-            Serial.println("недостаточно средств");
-            digitalWrite(PIN_NO, HIGH);
-            delay(1000);
-            digitalWrite(PIN_NO, LOW);
-        }
-    } else {
-        Serial.println("цифры не найдены, запиши число через NFC Tools");
-    }
-
-    rfid.PICC_HaltA();
-    rfid.PCD_StopCrypto1();
+  delay(100);
 }
