@@ -15,6 +15,12 @@ D11 <-> MOSI
 D13 <-> SCK
 D10 <-> SDA
 ```
+#### Arduino Nano (Модуль оплаты/reader) <-> Arduino Nano (Основные мозги/receiver)
+```
+reader a4 (sda)   <->  receiver a4 (sda)
+reader a5 (scl)   <->  receiver a5 (scl)
+reader gnd        <->  receiver gnd
+```
 #### Arduino Nano <-> LED RGB K851264 || 
 > ***Временное решение!***
 ```
