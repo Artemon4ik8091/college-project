@@ -39,7 +39,7 @@ volatile byte goal_status = 0x00;
 #define button 2         // кнопка "проснуться" (INT0) — сюда же Ard3 подаёт импульс
 #define calibr_button 3  // скрытая кнопка калибровки и сброса
 #define disp_power 12    // питание дисплея
-#define LEDpin 11        // питание светодиода
+#define LEDpin 8         // питание светодиода
 #define IRpin 17         // питание фототранзистора
 #define IRsens 14        // сигнал фототранзистора
 //-------ПИНЫ---------
