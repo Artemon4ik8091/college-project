@@ -7,6 +7,31 @@
 #define CMD_DENY 0xA0
 #define CMD_APPROVE_AND_CHARGE 0xA1
 
+// кнопки
+const uint8_t BTN_DRINK1  = 2;   // напиток 1
+const uint8_t BTN_DRINK2  = 3;   // напиток 2
+const uint8_t BTN_VOLUME1 = 4;   // объем 1
+const uint8_t BTN_VOLUME2 = 5;   // объем 2
+
+// помпы
+const uint8_t PUMP1_PIN = 9;     // помпа напитка 1
+const uint8_t PUMP2_PIN = 10;    // помпа напитка 2
+
+// время налива для 2 объемов
+const unsigned long VOLUME1_TIME = 3000;  // малый объем
+const unsigned long VOLUME2_TIME = 5000;  // большой объем
+
+bool goalReached = false;
+bool orderDone = false;
+
+uint8_t selectedDrink = 0;
+uint8_t selectedVolume = 0;
+
+bool lastDrink1State  = HIGH;
+bool lastDrink2State  = HIGH;
+bool lastVolume1State = HIGH;
+bool lastVolume2State = HIGH;
+
 // Пин Ard3 который подключён к пину 2 (INT0) на Ard1 для пробуждения
 #define PIGGYBANK_WAKE_PIN 6
 
@@ -20,10 +45,10 @@ const byte authorizedHash[HASH_SIZE] = {
   0x18, 0x46, 0xBE, 0x2F, 0x14, 0x6E, 0xDF, 0x34
 };
 
-bool goalReached = false;
 
 unsigned long lastPiggyPoll = 0;
 const unsigned long piggyPollInterval = 5000;  // поллим копилку каждые 5 сек
+
 
 bool sameArray(byte *a, byte *b, byte len) {
   for (byte i = 0; i < len; i++) {
@@ -87,26 +112,69 @@ void wakePiggybank() {
 void pollPiggybank() {
   wakePiggybank();
 
-  int count = Wire.requestFrom(PIGGYBANK_ADDRESS, (byte)1);
+  uint8_t count = Wire.requestFrom((uint8_t)PIGGYBANK_ADDRESS, (uint8_t)1);
   if (count < 1) {
     Serial.println("piggybank: no response");
     return;
   }
 
-  byte status = Wire.read();
-  while (Wire.available()) Wire.read();  // сбросить лишнее
+  uint8_t status = Wire.read();
+  while (Wire.available()) Wire.read();
 
   if (status == 0x01 && !goalReached) {
     goalReached = true;
-    Serial.println("piggybank: TARGET SUM REACHED!");
-    // тут можешь добавить свою логику — зажечь LED, отправить команду и т.д.
+    orderDone = false;
+    Serial.println("piggybank: target sum reached!");
   } else if (status == 0x00) {
-    goalReached = false;  // если сумму сбросили
+    goalReached = false;
+    orderDone = false;
   }
+}
+
+void tryDispense() {
+  if (!goalReached) return;
+  if (orderDone) return;
+  if (selectedDrink == 0 || selectedVolume == 0) return;
+
+  unsigned long pumpTime = 0;
+
+  if (selectedVolume == 1) {
+    pumpTime = VOLUME1_TIME;
+  } else if (selectedVolume == 2) {
+    pumpTime = VOLUME2_TIME;
+  }
+
+  if (selectedDrink == 1) {
+    Serial.println("dispensing drink 1");
+    digitalWrite(PUMP1_PIN, HIGH);
+    delay(pumpTime);
+    digitalWrite(PUMP1_PIN, LOW);
+  } else if (selectedDrink == 2) {
+    Serial.println("dispensing drink 2");
+    digitalWrite(PUMP2_PIN, HIGH);
+    delay(pumpTime);
+    digitalWrite(PUMP2_PIN, LOW);
+  }
+
+  orderDone = true;
+  selectedDrink = 0;
+  selectedVolume = 0;
 }
 
 void setup() {
   Serial.begin(9600);
+  pinMode(9, OUTPUT);
+
+  pinMode(BTN_DRINK1, INPUT_PULLUP);
+  pinMode(BTN_DRINK2, INPUT_PULLUP);
+  pinMode(BTN_VOLUME1, INPUT_PULLUP);
+  pinMode(BTN_VOLUME2, INPUT_PULLUP);
+
+  pinMode(PUMP1_PIN, OUTPUT);
+  pinMode(PUMP2_PIN, OUTPUT);
+
+  digitalWrite(PUMP1_PIN, LOW);
+  digitalWrite(PUMP2_PIN, LOW);
 
   Wire.begin();
   Wire.setClock(100000);
@@ -122,9 +190,48 @@ void setup() {
   Serial.println("receiver ready");
 }
 
+void handleButtons() {
+  bool d1 = digitalRead(BTN_DRINK1);
+  bool d2 = digitalRead(BTN_DRINK2);
+  bool v1 = digitalRead(BTN_VOLUME1);
+  bool v2 = digitalRead(BTN_VOLUME2);
+
+  if (lastDrink1State == HIGH && d1 == LOW) {
+    selectedDrink = 1;
+    Serial.println("selected drink 1");
+    delay(30);
+  }
+
+  if (lastDrink2State == HIGH && d2 == LOW) {
+    selectedDrink = 2;
+    Serial.println("selected drink 2");
+    delay(30);
+  }
+
+  if (lastVolume1State == HIGH && v1 == LOW) {
+    selectedVolume = 1;
+    Serial.println("selected volume 1");
+    delay(30);
+  }
+
+  if (lastVolume2State == HIGH && v2 == LOW) {
+    selectedVolume = 2;
+    Serial.println("selected volume 2");
+    delay(30);
+  }
+
+  lastDrink1State = d1;
+  lastDrink2State = d2;
+  lastVolume1State = v1;
+  lastVolume2State = v2;
+}
+
 void loop() {
   // === Поллинг RFID ридера (Ard 2) ===
   int count = Wire.requestFrom(READER_ADDRESS, HASH_SIZE);
+
+  handleButtons();
+  tryDispense();
 
   if (count != HASH_SIZE) {
     Serial.print("i2c read error, got bytes: ");
