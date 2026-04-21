@@ -23,6 +23,7 @@ bool hashReady = false;
 
 volatile bool commandPending = false;
 volatile byte receivedCommand = 0;
+volatile byte receivedPrice = 0; // Переменная для хранения полученной цены [cite: 100]
 
 unsigned long lastScanTime = 0;
 const unsigned long scanCooldown = 1500;
@@ -43,15 +44,6 @@ void computeHashFromFixedString() {
   hashReady = true;
 }
 
-void printHash(byte *hash) {
-  Serial.print("hash: ");
-  for (byte i = 0; i < HASH_SIZE; i++) {
-    if (hash[i] < 0x10) Serial.print("0");
-    Serial.print(hash[i], HEX);
-  }
-  Serial.println();
-}
-
 void indicateSuccess() {
   digitalWrite(LED_OK, HIGH);
   delay(500);
@@ -67,8 +59,11 @@ void indicateFail() {
   }
 }
 
-bool chargeBalance() {
-  delay(250);
+// Теперь функция принимает цену для списания [cite: 107]
+bool chargeBalance(byte price) {
+  Serial.print("Charging amount: ");
+  Serial.println(price);
+  delay(250); // Имитация процесса оплаты
   return true;
 }
 
@@ -82,36 +77,47 @@ void onI2CRequest() {
   }
 }
 
+// Обновленная функция приема данных по I2C 
 void onI2CReceive(int count) {
   if (count < 1) return;
-  receivedCommand = Wire.read();
+  
+  receivedCommand = Wire.read(); // Читаем первый байт (команду) 
+  
+  if (count >= 2) {
+    receivedPrice = Wire.read(); // Читаем второй байт (цену), если он есть 
+  } else {
+    receivedPrice = 0;
+  }
+  
   commandPending = true;
-
+  
   while (Wire.available()) {
-    Wire.read();
+    Wire.read(); // Очищаем буфер, если пришло что-то лишнее [cite: 111]
   }
 }
 
-void handleCommand(byte cmd) {
+void handleCommand(byte cmd, byte price) {
   if (cmd == CMD_APPROVE_AND_CHARGE) {
-    Serial.println("approve command received");
-    bool charged = chargeBalance();
+    Serial.print("Approve command received. Price: ");
+    Serial.println(price);
+    
+    bool charged = chargeBalance(price); // Передаем цену в логику оплаты [cite: 112]
 
     if (charged) {
-      Serial.println("charge success");
+      Serial.println("Charge success");
       indicateSuccess();
     } else {
-      Serial.println("charge failed");
+      Serial.println("Charge failed");
       indicateFail();
     }
 
     clearHashBuffer();
   } else if (cmd == CMD_DENY) {
-    Serial.println("deny command received");
+    Serial.println("Deny command received");
     indicateFail();
     clearHashBuffer();
   } else {
-    Serial.print("unknown command: ");
+    Serial.print("Unknown command: ");
     Serial.println(cmd, HEX);
     indicateFail();
     clearHashBuffer();
@@ -134,18 +140,18 @@ void setup() {
   Wire.onReceive(onI2CReceive);
 
   clearHashBuffer();
-
-  Serial.println("reader ready");
+  Serial.println("Reader ready");
 }
 
 void loop() {
   if (commandPending) {
     noInterrupts();
     byte cmd = receivedCommand;
+    byte price = receivedPrice; // Забираем цену из волатильной переменной [cite: 117]
     commandPending = false;
     interrupts();
 
-    handleCommand(cmd);
+    handleCommand(cmd, price);
   }
 
   if (millis() - lastScanTime < scanCooldown) {
@@ -163,12 +169,10 @@ void loop() {
     return;
   }
 
-  Serial.println("card detected");
+  Serial.println("Card detected");
   computeHashFromFixedString();
-  printHash(hashBuffer);
-
+  
   lastScanTime = millis();
-
   mfrc522.PICC_HaltA();
   mfrc522.PCD_StopCrypto1();
 
